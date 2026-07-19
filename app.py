@@ -9,6 +9,8 @@ import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
+from sklearn.exceptions import NotFittedError
+from sklearn.utils.validation import check_is_fitted
 
 # ------------------------------------------------------------------
 # Page setup
@@ -42,6 +44,77 @@ model_name = bundle["model_name"]
 scaler = bundle["scaler"]
 feature_columns = bundle["feature_columns"]
 defaults = bundle["defaults"]
+
+# ------------------------------------------------------------------
+# Safety check: make sure the scaler and model were actually trained
+# before they were saved. A blank (unfitted) scaler is the most common
+# cause of a broken model file.
+# ------------------------------------------------------------------
+def check_bundle_is_trained():
+    problems = []
+    for label, obj in (("scaler", scaler), ("model", model)):
+        try:
+            check_is_fitted(obj)
+        except NotFittedError:
+            problems.append(label)
+    return problems
+
+
+broken = check_bundle_is_trained()
+if broken:
+    st.error(
+        f"The saved file contains an untrained **{' and '.join(broken)}**, "
+        "so predictions cannot be made."
+    )
+    st.markdown(
+        """
+**How to fix this**
+
+In your notebook, add a new cell at the bottom and run it:
+
+```python
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils.validation import check_is_fitted
+import joblib
+
+scaler = StandardScaler()
+scaler.fit(X_train)                       # train the scaler
+best.fit(scaler.transform(X_train), y_train)   # retrain the model
+
+check_is_fitted(scaler)
+check_is_fitted(best)
+
+bundle = {
+    "model": best,
+    "model_name": best_name,
+    "scaler": scaler,
+    "feature_columns": list(X.columns),
+    "defaults": X.median(numeric_only=True).to_dict(),
+    "accuracy": float(results.iloc[0]["Accuracy"]),
+    "roc_auc": float(results.iloc[0]["ROC_AUC"]),
+}
+joblib.dump(bundle, "customer_response_model.pkl")
+print("Saved correctly")
+```
+
+Then download the new `customer_response_model.pkl`, replace the old one,
+and reboot this app.
+
+**Why it happened:** a line like `scaler = StandardScaler()` ran *after* the
+training step, which replaced the trained scaler with a blank one.
+"""
+    )
+    st.stop()
+
+# Check the scaler expects the same number of columns we will send it
+expected = getattr(scaler, "n_features_in_", None)
+if expected is not None and expected != len(feature_columns):
+    st.error(
+        f"Column mismatch: the scaler expects {expected} columns but the saved "
+        f"column list has {len(feature_columns)}. Re-run your notebook from the "
+        "top and save the model again."
+    )
+    st.stop()
 
 # Work out which category columns exist, so the app matches the training data
 edu_cols = [c for c in feature_columns if c.startswith("Education_")]
